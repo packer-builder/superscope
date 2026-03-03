@@ -5,11 +5,8 @@
               scheme: HTTP
 {{- end }}
 {{- define "probe.tcp" }}
-            exec:
-              command:
-                - /bin/sh
-                - '-c'
-                - nc -z localhost {{ .app_port }} && nc -z localhost {{ .traffic_port }}
+            tcpSocket:
+              port: {{ .app_port }}
 {{- end }}
 {{- define "probe.app_tcp" }}
             tcpSocket:
@@ -118,120 +115,6 @@ spec:
       {{- end }}
       {{- end }}
       containers:
-        - name: http
-          securityContext:
-            runAsUser: 0
-          image: {{ .traffic_image }}
-          {{- if .traffic_manager_config_map }}
-          volumeMounts:
-              - name: nginx-config
-                mountPath: /etc/nginx/nginx.conf
-                subPath: nginx.conf
-              - name: nginx-config
-                mountPath: /etc/nginx/conf.d/default.conf
-                subPath: default.conf
-          {{- end }}
-          ports:
-            - containerPort: 80
-              protocol: TCP
-          env:
-            - name: HEALTH_CHECK_TYPE
-              value: http
-            - name: GRACE_PERIOD
-              value: '15'
-            - name: LISTENER_PROTOCOL
-              value: http
-            - name: HEALTH_CHECK_PATH
-              value: {{ .scope.capabilities.health_check.path }}
-          resources:
-            limits:
-              cpu: 93m
-              memory: 64Mi
-            requests:
-              cpu: 31m
-          livenessProbe:
-            {{- if and (has .scope.capabilities.health_check "type") (eq .scope.capabilities.health_check.type "TCP") }}
-            {{- template "probe.tcp" dict "healthCheck" .scope.capabilities.health_check "traffic_port" 80 "app_port" 8080 }}
-            {{- else }}
-            {{- template "probe.http" dict "healthCheck" .scope.capabilities.health_check "port" 80 }}
-            {{- end }}
-            {{- template "probe.base" dict "healthCheck" .scope.capabilities.health_check }}
-            failureThreshold: 9
-          readinessProbe:
-            {{- if and (has .scope.capabilities.health_check "type") (eq .scope.capabilities.health_check.type "TCP") }}
-            {{- template "probe.tcp" dict "healthCheck" .scope.capabilities.health_check "traffic_port" 80 "app_port" 8080 }}
-            {{- else }}
-            {{- template "probe.http" dict "healthCheck" .scope.capabilities.health_check "port" 80 }}
-            {{- end }}
-            {{- template "probe.base" dict "healthCheck" .scope.capabilities.health_check }}
-            failureThreshold: 3
-          startupProbe:
-            {{- if and (has .scope.capabilities.health_check "type") (eq .scope.capabilities.health_check.type "TCP") }}
-            {{- template "probe.tcp" dict "healthCheck" .scope.capabilities.health_check "traffic_port" 80 "app_port" 8080 }}
-            {{- else }}
-            {{- template "probe.http" dict "healthCheck" .scope.capabilities.health_check "port" 80 }}
-            {{- end }}
-            {{- template "probe.base" dict "healthCheck" .scope.capabilities.health_check }}
-            failureThreshold: 90
-          terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
-          imagePullPolicy: Always
-
-        {{ if .scope.capabilities.additional_ports }}
-        {{ range .scope.capabilities.additional_ports }}
-        {{ if eq .type "GRPC" }}
-        - name: grpc-{{ .port }}
-          securityContext:
-            runAsUser: 0
-          image: {{ $.traffic_image }}
-          ports:
-            - containerPort: {{ .port }}
-              protocol: TCP
-          env:
-            - name: HEALTH_CHECK_TYPE
-              value: grpc
-            - name: GRACE_PERIOD
-              value: '15'
-            - name: LISTENER_PROTOCOL
-              value: grpc
-            - name: LISTENER_PORT
-              value: '{{ .port }}'
-          resources:
-            limits:
-              cpu: 93m
-              memory: 64Mi
-            requests:
-              cpu: 31m
-          livenessProbe:
-            grpc:
-              port: {{ .port }}
-            timeoutSeconds: 5
-            periodSeconds: 10
-            initialDelaySeconds: {{ $.scope.capabilities.health_check.initial_delay_seconds }}
-            successThreshold: 1
-            failureThreshold: 9
-          readinessProbe:
-            grpc:
-              port: {{ .port }}
-            timeoutSeconds: 5
-            periodSeconds: 10
-            initialDelaySeconds: {{ $.scope.capabilities.health_check.initial_delay_seconds }}
-            successThreshold: 1
-            failureThreshold: 3
-          startupProbe:
-            grpc:
-              port: {{ .port }}
-            timeoutSeconds: 5
-            periodSeconds: 10
-            initialDelaySeconds: {{ $.scope.capabilities.health_check.initial_delay_seconds }}
-            successThreshold: 1
-            failureThreshold: 90
-          terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
-          imagePullPolicy: Always
-        {{ end }}
-        {{ end }}
-        {{ end }}
         - name: application
           envFrom:
             - secretRef:
@@ -303,11 +186,6 @@ spec:
       {{- end }}
     {{- end }}
       volumes:
-      {{- if .traffic_manager_config_map }}
-      - name: nginx-config
-        configMap:
-          name: {{ .traffic_manager_config_map }}
-      {{- end }}
 {{- if .parameters.results }}
   {{- range .parameters.results }}
     {{- if and (eq .type "file") }}

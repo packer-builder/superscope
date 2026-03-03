@@ -5,24 +5,58 @@ set -euo pipefail
 if [ "$ACTION" = "CREATE" ]; then
     echo "Building DNSEndpoint manifest for ExternalDNS..."
     
-    echo "Getting IP for gateway: $GATEWAY_NAME"
+    echo "Getting address for gateway: $GATEWAY_NAME"
 
-    GATEWAY_IP=$(kubectl get gateway "$GATEWAY_NAME" -n gateways \
+    GATEWAY_ADDRESS=""
+    DNS_RECORD_TYPE=""
+
+    # Try IP address first (GCP, Azure, on-prem)
+    GATEWAY_ADDRESS=$(kubectl get gateway "$GATEWAY_NAME" -n gateways \
       -o jsonpath='{.status.addresses[?(@.type=="IPAddress")].value}' 2>/dev/null)
 
-    if [ -z "$GATEWAY_IP" ]; then
-      echo "Warning: Could not get gateway IP for $GATEWAY_NAME"
-
-      GATEWAY_IP=$(kubectl get service "$GATEWAY_NAME" -n gateways \
-        -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+    if [ -n "$GATEWAY_ADDRESS" ]; then
+      DNS_RECORD_TYPE="A"
+      echo "Found gateway IP: $GATEWAY_ADDRESS"
     fi
-    
-    if [ -z "$GATEWAY_IP" ]; then
-      echo "Warning: Could not determine gateway IP address yet, DNSEndpoint will be created later"
+
+    # Try hostname from gateway (AWS NLB/ALB)
+    if [ -z "$GATEWAY_ADDRESS" ]; then
+      GATEWAY_ADDRESS=$(kubectl get gateway "$GATEWAY_NAME" -n gateways \
+        -o jsonpath='{.status.addresses[?(@.type=="Hostname")].value}' 2>/dev/null)
+      if [ -n "$GATEWAY_ADDRESS" ]; then
+        DNS_RECORD_TYPE="CNAME"
+        echo "Found gateway hostname: $GATEWAY_ADDRESS"
+      fi
+    fi
+
+    # Fallback: try service loadBalancer IP
+    if [ -z "$GATEWAY_ADDRESS" ]; then
+      GATEWAY_ADDRESS=$(kubectl get service "${GATEWAY_NAME}-istio" -n gateways \
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+      if [ -n "$GATEWAY_ADDRESS" ]; then
+        DNS_RECORD_TYPE="A"
+        echo "Found service LB IP: $GATEWAY_ADDRESS"
+      fi
+    fi
+
+    # Fallback: try service loadBalancer hostname (AWS)
+    if [ -z "$GATEWAY_ADDRESS" ]; then
+      GATEWAY_ADDRESS=$(kubectl get service "${GATEWAY_NAME}-istio" -n gateways \
+        -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+      if [ -n "$GATEWAY_ADDRESS" ]; then
+        DNS_RECORD_TYPE="CNAME"
+        echo "Found service LB hostname: $GATEWAY_ADDRESS"
+      fi
+    fi
+
+    if [ -z "$GATEWAY_ADDRESS" ]; then
+      echo "Warning: Could not determine gateway address yet, DNSEndpoint will be created later"
       exit 0
     fi
-    
-    echo "Gateway IP: $GATEWAY_IP"
+
+    export GATEWAY_ADDRESS
+    export DNS_RECORD_TYPE
+    echo "Gateway address: $GATEWAY_ADDRESS (record type: $DNS_RECORD_TYPE)"
     
     DNS_ENDPOINT_TEMPLATE="${DNS_ENDPOINT_TEMPLATE:-$SERVICE_PATH/deployment/templates/dns-endpoint.yaml.tpl}"
     
@@ -30,7 +64,10 @@ if [ "$ACTION" = "CREATE" ]; then
       DNS_ENDPOINT_FILE="$OUTPUT_DIR/dns-endpoint-$SCOPE_ID.yaml"
       CONTEXT_PATH="$OUTPUT_DIR/context-$SCOPE_ID-dns.json"
       
-      echo "$CONTEXT" | jq --arg gateway_ip "$GATEWAY_IP" '. + {gateway_ip: $gateway_ip}' > "$CONTEXT_PATH"
+      echo "$CONTEXT" | jq \
+        --arg gateway_address "$GATEWAY_ADDRESS" \
+        --arg dns_record_type "$DNS_RECORD_TYPE" \
+        '. + {gateway_address: $gateway_address, dns_record_type: $dns_record_type, gateway_ip: $gateway_address}' > "$CONTEXT_PATH"
       
       echo "Building DNSEndpoint Template: $DNS_ENDPOINT_TEMPLATE to $DNS_ENDPOINT_FILE"
       
