@@ -71,6 +71,11 @@ spec:
         - path:
             type: PathPrefix
             value: /
+{{ if eq .scope.capabilities.protocol "web_sockets" }}
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
+{{ end }}
 
 {{ if .scope.capabilities.additional_ports }}
 {{ range .scope.capabilities.additional_ports }}
